@@ -1,0 +1,167 @@
+# This workflow has automatic failover between Main and DR repositories
+# Main repo (ny5457/General): Runs by default
+# DR repo (nandlalyadav57/General): Activates when Main runs low on minutes
+
+name: 💰 ITR - Tax Education & DIY Filing (Facebook)
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "dry_run (true/false)"
+        required: false
+        default: "false"
+
+  schedule:
+    # VIRAL-OPTIMIZED India Tech Schedule (3x daily)
+    - cron: "30 4 * * *"    # 10:00 AM IST - Morning planning
+    - cron: "30 10 * * *"   # 4:00 PM IST - Post-lunch research
+    - cron: "0 14 * * *"    # 7:30 PM IST - Evening implementation
+
+permissions:
+  contents: write  # Required to persist content history
+
+jobs:
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  # GATEKEEPER: Intelligent Failover Control
+  # Auto-detects: MAIN (ny5457) or DR (nandlalyadav57)
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  post_ITR:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg libsm6 libxext6 imagemagick
+
+
+      - name: Install Python dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install requests google-genai openai gTTS imageio
+          python3 -m pip install "moviepy==1.0.3" "imageio[ffmpeg]"
+
+
+      - name: Verify moviepy installation
+        run: |
+          python3 -c "from moviepy.editor import VideoFileClip; print('moviepy.editor available ✅')"
+
+
+      - name: Verify Facebook token file
+        run: |
+          FB_FILE="Scripts/YT/Secrets_Sessions/Fb_Tokens.txt"
+          if [ ! -f "$FB_FILE" ]; then
+            echo "Error: Fb_Tokens.txt not found! Please generate it locally."
+            exit 1
+          else
+            echo "Fb_Tokens.txt exists ✅"
+          fi
+
+
+      - name: Load Facebook token for Fact Factory
+        id: load_fb
+        run: |
+          FB_FILE="Scripts/YT/Secrets_Sessions/Fb_Tokens.txt"
+          PAGE_ID=$(awk '/ITR/{getline; print $NF}' "$FB_FILE")
+          PAGE_TOKEN=$(awk '/ITR/{getline; getline; print $NF}' "$FB_FILE")
+          echo "Loaded Fact Factory page ID and token ✅"
+          echo "FB_PAGE_ID=$PAGE_ID" >> $GITHUB_ENV
+          echo "FB_PAGE_TOKEN=$PAGE_TOKEN" >> $GITHUB_ENV
+
+      - name: Generate and Post Tax Content
+        run: python3 Scripts/FB/ITR.py
+        env:
+          ITR_PAGE_ID: ${{ env.FB_PAGE_ID }}
+          ITR_PAGE_TOKEN: ${{ env.FB_PAGE_TOKEN }}
+          FB_PAGE_ID: ${{ env.FB_PAGE_ID }}
+          FB_PAGE_TOKEN: ${{ env.FB_PAGE_TOKEN }}
+
+          # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          # Enhanced HA Architecture: PRIMARY + BACKUP API Keys
+          # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+
+          # Gemini Keys (PRIMARY tier with exponential backoff)
+          GEMINI_API_KEY_PRIMARY: ${{ secrets.GEMINI_API_KEY_PRIMARY }}
+          GEMINI_API_KEY_PRIMARY_2: ${{ secrets.GEMINI_API_KEY_PRIMARY_2 }}
+          GEMINI_API_KEY_PRIMARY_3: ${{ secrets.GEMINI_API_KEY_PRIMARY_3 }}
+          GEMINI_API_KEY_PRIMARY_4: ${{ secrets.GEMINI_API_KEY_PRIMARY_4 }}
+          GEMINI_API_KEY_PRIMARY_5: ${{ secrets.GEMINI_API_KEY_PRIMARY_5 }}
+
+          # Gemini Keys (BACKUP tier)
+          GEMINI_API_KEY_BACKUP: ${{ secrets.GEMINI_API_KEY_BACKUP }}
+          GEMINI_API_KEY_BACKUP_2: ${{ secrets.GEMINI_API_KEY_BACKUP_2 }}
+          GEMINI_API_KEY_BACKUP_3: ${{ secrets.GEMINI_API_KEY_BACKUP_3 }}
+
+          # OpenAI Keys (PRIMARY + BACKUP)
+          OPENAI_API_KEY_PRIMARY: ${{ secrets.OPENAI_API_KEY_PRIMARY }}
+          OPENAI_API_KEY_BACKUP: ${{ secrets.OPENAI_API_KEY_BACKUP }}
+
+          # Note: Enhanced HA keys are auto-discovered by api_key_manager_enhanced.py
+
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
+
+      # Disabled to reduce commit notifications - commit manually 1-2x per day
+      # - name: 💾 Persist Content History (Duplicate Prevention)
+      #   if: always()
+      #   run: |
+      #     cd Scripts/FB
+      #
+      #     # Check if history files exist
+      #     HISTORY_CHANGED=false
+      #
+      #     # Check for workflow-specific history
+      #     if [ -f "itr_content_history.json" ]; then
+      #       HISTORY_CHANGED=true
+      #     fi
+      #
+      #     # Check for shared history
+      #     if [ -f "shared_content_history.json" ]; then
+      #       HISTORY_CHANGED=true
+      #     fi
+      #
+      #     # Check for content histories directory
+      #     if [ -d "content_histories" ] && [ -n "$(ls -A content_histories 2>/dev/null)" ]; then
+      #       HISTORY_CHANGED=true
+      #     fi
+      #
+      #     if [ "$HISTORY_CHANGED" = true ]; then
+      #       echo "✅ History files found - committing to prevent duplicates"
+      #
+      #       # Configure git
+      #       git config user.name "github-actions[bot]"
+      #       git config user.email "github-actions[bot]@users.noreply.github.com"
+      #
+      #       # Add all history files
+      #       git add itr_content_history.json 2>/dev/null || true
+      #       git add shared_content_history.json 2>/dev/null || true
+      #       git add content_histories/ 2>/dev/null || true
+      #       git add universal_duplicate_prevention.py 2>/dev/null || true
+      #
+      #       # Only commit if there are changes
+      #       if ! git diff --cached --quiet 2>/dev/null; then
+      #         git commit -m "chore: update ITR content history [skip ci]"
+      #         git push
+      #         echo "✅ History persisted to prevent duplicate posts"
+      #       else
+      #         echo "ℹ️  No history changes to commit"
+      #       fi
+      #     else
+      #       echo "ℹ️  No history files generated this run"
+      #     fi
+
+
+
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  # NOTIFICATION: Runs when workflow is skipped (DR standby mode)
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

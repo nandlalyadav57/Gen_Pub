@@ -1,0 +1,376 @@
+name: 🎬 Fact Factory - Viral Knowledge Videos (Multi-Platform)
+
+on:
+  # VIRAL-OPTIMIZED 5x daily schedule (targets global peak hours)
+  # Strategy: Hit US, Europe, and Asia prime times for maximum reach
+  schedule:
+    - cron: "0 3 * * *"    # 8:30 AM IST = 11:00 PM PST (US late night scroll)
+    - cron: "0 7 * * *"    # 12:30 PM IST = 3:00 AM PST / 12:00 PM CET (Europe lunch)
+    - cron: "0 10 * * *"   # 3:30 PM IST = 6:00 AM PST (US morning commute)
+    - cron: "0 14 * * *"   # 7:30 PM IST = 10:00 AM PST (US mid-morning peak)
+    - cron: "0 18 * * *"   # 11:30 PM IST = 2:00 PM PST (US afternoon peak)
+
+  # Manual trigger with mode selection
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: '📱 Platform Selection'
+        required: true
+        type: choice
+        options:
+          - '🌐 All Platforms (YouTube + Facebook + Instagram + Blogspot)'
+          - '🎥 YouTube Only'
+          - '📘 Facebook Only'
+          - '📸 Instagram Only'
+          - '📝 Blogspot Only'
+        default: '🌐 All Platforms (YouTube + Facebook + Instagram + Blogspot)'
+
+      mode:
+        description: 'Content mode (auto/text/image/video)'
+        required: false
+        default: 'auto'
+        type: choice
+        options:
+          - auto
+          - text
+          - image
+          - video
+      dry_run:
+        description: 'Dry run (test without posting)'
+        required: false
+        default: false
+        type: boolean
+      force:
+        description: 'Force post (skip cooldown)'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  # GATEKEEPER: Temporarily disabled - GitHub deprecated user billing API
+  # GitHub only allows organization billing checks, not personal accounts
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  # gatekeeper:
+  #   uses: ./.github/workflows/gatekeeper.yml
+  #   with:
+  #     repo_mode: ${{ github.repository == 'ny5457/General' && 'MAIN' || 'DR' }}
+  #   secrets:
+  #     main_billing_token: ${{ secrets.MAIN_BILLING_TOKEN }}
+  #     main_repo_owner: ${{ secrets.MAIN_REPO_OWNER }}
+
+  unified_fact_posting:
+    # needs: gatekeeper
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      # SKIP-FAST PRE-CHECK: Exit early if cooldown active (saves ~2min)
+      # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      - name: 🚦 Pre-check Cooldown (Skip-Fast)
+        id: precheck
+        run: |
+          HISTORY_FILE="Scripts/FB/fact_factory_unified_history.json"
+          FORCE_FLAG="${{ github.event.inputs.force || 'false' }}"
+
+          # If no history, proceed
+          if [ ! -f "$HISTORY_FILE" ]; then
+            echo "ℹ️  No history file - first run, proceeding..."
+            echo "should_proceed=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Extract last post date and calculate hours since
+          LAST_POST=$(jq -r '.last_post_date // empty' "$HISTORY_FILE")
+
+          if [ -z "$LAST_POST" ]; then
+            echo "ℹ️  No last_post_date in history - proceeding..."
+            echo "should_proceed=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Calculate minutes and hours since last post
+          LAST_EPOCH=$(date -d "$LAST_POST" +%s 2>/dev/null || echo 0)
+          NOW_EPOCH=$(date +%s)
+          MINUTES_SINCE=$(( ($NOW_EPOCH - $LAST_EPOCH) / 60 ))
+          HOURS_SINCE=$(( ($NOW_EPOCH - $LAST_EPOCH) / 3600 ))
+
+          echo "📅 Last post: $LAST_POST"
+          echo "⏱️  Time since: $HOURS_SINCE hours ($MINUTES_SINCE minutes)"
+
+          # HARD LIMIT: Absolute minimum 15 minutes between ANY posts
+          # This CANNOT be bypassed, even with force flag
+          # Prevents accidental duplicate posts from rapid manual triggers
+          HARD_LIMIT_MINUTES=15
+          if [ "$MINUTES_SINCE" -lt "$HARD_LIMIT_MINUTES" ]; then
+            MINUTES_REMAINING=$(( $HARD_LIMIT_MINUTES - $MINUTES_SINCE ))
+            echo "🚨 HARD LIMIT: Only $MINUTES_SINCE minutes since last post!"
+            echo "⛔ BLOCKING: Must wait $MINUTES_REMAINING more minute(s)"
+            echo "💡 This prevents duplicate Facebook posts from rapid triggers"
+            echo "🔒 CANNOT be bypassed (even with force flag)"
+            echo "should_proceed=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # SOFT LIMIT: Standard 3-hour cooldown for scheduled posts
+          # This CAN be bypassed with force flag for emergency manual posts
+          COOLDOWN_HOURS=3
+          if [ "$HOURS_SINCE" -lt "$COOLDOWN_HOURS" ]; then
+            if [ "$FORCE_FLAG" == "true" ]; then
+              echo "⚠️  Cooldown active ($HOURS_SINCE hours) BUT force flag enabled"
+              echo "🚀 Bypassing soft cooldown (hard limit already passed)"
+              echo "should_proceed=true" >> $GITHUB_OUTPUT
+              exit 0
+            else
+              HOURS_REMAINING=$(( $COOLDOWN_HOURS - $HOURS_SINCE ))
+              echo "⏸️  COOLDOWN ACTIVE - skipping to save GitHub Actions minutes"
+              echo "📊 Wait $HOURS_REMAINING more hour(s) before next post"
+              echo "💡 Strategy: 5x daily YouTube Shorts for maximum viral growth"
+              echo "💪 Use force=true to bypass (if hard limit passed)"
+              echo "should_proceed=false" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+          else
+            echo "✅ Cooldown passed ($HOURS_SINCE hours) - proceeding with post"
+            echo "should_proceed=true" >> $GITHUB_OUTPUT
+          fi
+      # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+      # --- System Dependencies ---
+      - name: Install system dependencies
+        if: steps.precheck.outputs.should_proceed == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg libsm6 libxext6 imagemagick libjpeg-dev jq build-essential python3-dev
+
+      # --- Modern Fonts for YouTube Shorts ---
+      - name: Install modern fonts for video text overlays
+        if: steps.precheck.outputs.should_proceed == 'true'
+        run: |
+          sudo apt-get install -y fonts-roboto fonts-liberation fonts-dejavu-core fontconfig
+          fc-cache -f -v
+          echo "✅ Installed Roboto, Liberation Sans, and DejaVu fonts"
+          fc-list | grep -i "roboto\|liberation\|dejavu" | head -10
+
+      - name: Fix ImageMagick Security Policy
+        if: steps.precheck.outputs.should_proceed == 'true'
+        run: |
+          POLICY_FILE=$(find /etc/ImageMagick* -name policy.xml | head -n 1)
+          sudo sed -i 's/rights="none" pattern="PDF"/rights="read|write" pattern="PDF"/' $POLICY_FILE || true
+          sudo sed -i 's/rights="none" pattern="LABEL"/rights="read|write" pattern="LABEL"/' $POLICY_FILE || true
+          sudo sed -i 's/rights="none" pattern="CAPTION"/rights="read|write" pattern="CAPTION"/' $POLICY_FILE || true
+          sudo sed -i 's/rights="none" pattern="TEXT"/rights="read|write" pattern="TEXT"/' $POLICY_FILE || true
+          sudo sed -i 's/rights="none" pattern="@\*"/rights="read|write" pattern="@*"/' $POLICY_FILE || true
+          # Enable reading from temporary files (required for MoviePy TextClip)
+          sudo sed -i '/<policymap>/a \  <policy domain="path" rights="read|write" pattern="/tmp/*" />' $POLICY_FILE || true
+          echo "✅ ImageMagick policy updated to allow temp file access"
+
+      # --- Python Dependencies ---
+      - name: Install Python dependencies
+        if: steps.precheck.outputs.should_proceed == 'true'
+        run: |
+          python3 -m pip install --upgrade pip setuptools wheel
+          python3 -m pip install moviepy==1.0.3 "imageio[ffmpeg]==2.9.0" Pillow==9.5.0 requests gTTS python-dotenv
+          python3 -m pip install google-api-python-client google-auth google-auth-oauthlib google-auth-httplib2
+          python3 -m pip install google-generativeai openai  # LLM APIs for content generation
+          python3 -m pip install scipy numpy  # Elite Production Matrix: Auto-ducking audio + waveform analysis
+
+      # --- Load ALL API Keys from Master CSV (Single Source of Truth) ---
+      - name: 🔑 Load ALL API Keys from Master CSV
+        if: steps.precheck.outputs.should_proceed == 'true'
+        run: |
+          # Universal key loader - reads Scripts/keys/master_email_api_list.csv
+          # Automatically exports: Gemini, OpenAI, OpenRouter, TogetherAI, Fireworks, Mistral, DeepSeek, Pexels, Pixabay
+          chmod +x .github/scripts/load_all_keys_from_csv.sh
+          bash .github/scripts/load_all_keys_from_csv.sh
+
+          # Add Pexels key from GitHub Secrets (fallback if CSV is empty)
+          if [ -n "${{ secrets.PEXELS_API_KEY }}" ]; then
+            echo "PEXELS_API_KEY=${{ secrets.PEXELS_API_KEY }}" >> $GITHUB_ENV
+            echo "✅ Loaded Pexels key from GitHub Secrets"
+          fi
+
+          # Load Facebook tokens from text file (separate from CSV)
+          FB_FILE="Scripts/YT/Secrets_Sessions/Fb_Tokens.txt"
+          if [ -f "$FB_FILE" ]; then
+            FB_PAGE_ID=$(awk '/The Fact Factory/{getline; print $NF}' "$FB_FILE" | tr -d '\r')
+            FB_PAGE_TOKEN=$(awk '/The Fact Factory/{getline; getline; print $NF}' "$FB_FILE" | tr -d '\r')
+            echo "FB_PAGE_ID=$FB_PAGE_ID" >> $GITHUB_ENV
+            echo "FB_PAGE_TOKEN=$FB_PAGE_TOKEN" >> $GITHUB_ENV
+            echo "✅ Loaded Facebook tokens from file"
+          else
+            echo "FB_PAGE_ID=${{ secrets.FB_PAGE_ID }}" >> $GITHUB_ENV
+            echo "FB_PAGE_TOKEN=${{ secrets.FB_PAGE_TOKEN }}" >> $GITHUB_ENV
+            echo "⚠️  FB file not found, using secrets (fallback)"
+          fi
+
+          # Instagram configuration (to be enabled/disabled by platform selection)
+          echo "FACT_FACTORY_INSTAGRAM_ID=${{ secrets.FACT_FACTORY_INSTAGRAM_ID }}" >> $GITHUB_ENV
+          echo "INSTAGRAM_BUSINESS_ID=${{ secrets.FACT_FACTORY_INSTAGRAM_ID }}" >> $GITHUB_ENV
+
+          # YouTube OAuth (Token 3: FactsAndStoriesTube)
+          echo "🎬 Loading YouTube Token 3 (FactsAndStoriesTube)..."
+          YT_FILE3="Scripts/YT/Secrets_Sessions/YT_Tokens3.txt"
+          if [ -f "$YT_FILE3" ]; then
+            YOUTUBE_REFRESH_TOKEN=$(grep 'refresh_token' "$YT_FILE3" | awk -F'=' '{print $2}' | xargs)
+            YOUTUBE_CLIENT_ID=$(grep 'client_id' "$YT_FILE3" | awk -F'=' '{print $2}' | xargs)
+            YOUTUBE_CLIENT_SECRET=$(grep 'client_secret' "$YT_FILE3" | awk -F'=' '{print $2}' | xargs)
+            echo "✅ Loaded from file: YT_Tokens3.txt"
+          else
+            YOUTUBE_REFRESH_TOKEN="${{ secrets.YOUTUBE_REFRESH_TOKEN }}"
+            YOUTUBE_CLIENT_ID="${{ secrets.YOUTUBE_CLIENT_ID }}"
+            YOUTUBE_CLIENT_SECRET="${{ secrets.YOUTUBE_CLIENT_SECRET }}"
+            echo "⚠️  File not found, using GitHub secrets (fallback)"
+          fi
+          echo "YOUTUBE_CHANNEL_ID=${{ secrets.YOUTUBE_CHANNEL_ID }}" >> $GITHUB_ENV
+          echo "YOUTUBE_REFRESH_TOKEN=$YOUTUBE_REFRESH_TOKEN" >> $GITHUB_ENV
+          echo "YOUTUBE_CLIENT_ID=$YOUTUBE_CLIENT_ID" >> $GITHUB_ENV
+          echo "YOUTUBE_CLIENT_SECRET=$YOUTUBE_CLIENT_SECRET" >> $GITHUB_ENV
+
+          # Blogger (uses YouTube OAuth + optional backup credentials)
+          echo "BLOGGER_BLOG_ID=${{ secrets.BLOGGER_BLOG_ID || '7187230462020818776' }}" >> $GITHUB_ENV
+          echo "BLOGGER_CLIENT_ID=${{ secrets.BLOGGER_CLIENT_ID }}" >> $GITHUB_ENV
+          echo "BLOGGER_CLIENT_SECRET=${{ secrets.BLOGGER_CLIENT_SECRET }}" >> $GITHUB_ENV
+          if [ -n "${{ secrets.BLOGGER_REFRESH_TOKEN_1 }}" ]; then
+            echo "BLOGGER_REFRESH_TOKEN_1=${{ secrets.BLOGGER_REFRESH_TOKEN_1 }}" >> $GITHUB_ENV
+            echo "BLOGGER_CLIENT_ID_1=${{ secrets.BLOGGER_CLIENT_ID_1 }}" >> $GITHUB_ENV
+            echo "BLOGGER_CLIENT_SECRET_1=${{ secrets.BLOGGER_CLIENT_SECRET_1 }}" >> $GITHUB_ENV
+          fi
+          if [ -n "${{ secrets.BLOGGER_REFRESH_TOKEN_2 }}" ]; then
+            echo "BLOGGER_REFRESH_TOKEN_2=${{ secrets.BLOGGER_REFRESH_TOKEN_2 }}" >> $GITHUB_ENV
+            echo "BLOGGER_CLIENT_ID_2=${{ secrets.BLOGGER_CLIENT_ID_2 }}" >> $GITHUB_ENV
+            echo "BLOGGER_CLIENT_SECRET_2=${{ secrets.BLOGGER_CLIENT_SECRET_2 }}" >> $GITHUB_ENV
+          fi
+          if [ -n "${{ secrets.BLOGGER_REFRESH_TOKEN_3 }}" ]; then
+            echo "BLOGGER_REFRESH_TOKEN_3=${{ secrets.BLOGGER_REFRESH_TOKEN_3 }}" >> $GITHUB_ENV
+            echo "BLOGGER_CLIENT_ID_3=${{ secrets.BLOGGER_CLIENT_ID_3 }}" >> $GITHUB_ENV
+            echo "BLOGGER_CLIENT_SECRET_3=${{ secrets.BLOGGER_CLIENT_SECRET_3 }}" >> $GITHUB_ENV
+          fi
+          if [ -n "${{ secrets.BLOGGER_REFRESH_TOKEN_4 }}" ]; then
+            echo "BLOGGER_REFRESH_TOKEN_4=${{ secrets.BLOGGER_REFRESH_TOKEN_4 }}" >> $GITHUB_ENV
+            echo "BLOGGER_CLIENT_ID_4=${{ secrets.BLOGGER_CLIENT_ID_4 }}" >> $GITHUB_ENV
+            echo "BLOGGER_CLIENT_SECRET_4=${{ secrets.BLOGGER_CLIENT_SECRET_4 }}" >> $GITHUB_ENV
+          fi
+          if [ -n "${{ secrets.BLOGGER_REFRESH_TOKEN_5 }}" ]; then
+            echo "BLOGGER_REFRESH_TOKEN_5=${{ secrets.BLOGGER_REFRESH_TOKEN_5 }}" >> $GITHUB_ENV
+            echo "BLOGGER_CLIENT_ID_5=${{ secrets.BLOGGER_CLIENT_ID_5 }}" >> $GITHUB_ENV
+            echo "BLOGGER_CLIENT_SECRET_5=${{ secrets.BLOGGER_CLIENT_SECRET_5 }}" >> $GITHUB_ENV
+          fi
+
+      # --- Execute Unified Fact Factory (YouTube Shorts Primary) ---
+      - name: Execute Fact Factory Unified
+        if: steps.precheck.outputs.should_proceed == 'true'
+        run: |
+          # Video-first strategy (default to video for YouTube Shorts engagement)
+          HOUR=$(date -u +%H)
+          INPUT_MODE="${{ github.event.inputs.mode }}"
+
+          # Force VIDEO mode for scheduled runs and auto-selection
+          if [ -z "$INPUT_MODE" ] || [ "$INPUT_MODE" == "auto" ]; then
+            MODE="video"
+            echo "🎬 Auto-selected VIDEO mode (YouTube Shorts primary engagement strategy)"
+          else
+            MODE="$INPUT_MODE"
+            echo "📝 Manual mode override: $MODE"
+          fi
+
+          DRY_RUN="${{ github.event.inputs.dry_run || 'false' }}"
+          FORCE="${{ github.event.inputs.force || 'false' }}"
+
+          # Platform Configuration
+          PLATFORM="${{ github.event.inputs.platform }}"
+
+          # Default to all platforms if triggered by schedule
+          if [ -z "$PLATFORM" ]; then
+            PLATFORM="🌐 All Platforms (YouTube + Facebook + Instagram + Blogspot)"
+          fi
+
+          echo "📱 Selected Platform: $PLATFORM"
+
+          # Configure platform flags
+          case "$PLATFORM" in
+            *"All Platforms"*)
+              echo "ENABLE_YOUTUBE=true" >> $GITHUB_ENV
+              echo "ENABLE_FACEBOOK=true" >> $GITHUB_ENV
+              echo "ENABLE_INSTAGRAM_CROSSPOST=true" >> $GITHUB_ENV
+              echo "ENABLE_BLOGSPOT=true" >> $GITHUB_ENV
+              echo "🌐 Posting to ALL platforms"
+              ;;
+            *"YouTube Only"*)
+              echo "ENABLE_YOUTUBE=true" >> $GITHUB_ENV
+              echo "ENABLE_FACEBOOK=false" >> $GITHUB_ENV
+              echo "ENABLE_INSTAGRAM_CROSSPOST=false" >> $GITHUB_ENV
+              echo "ENABLE_BLOGSPOT=false" >> $GITHUB_ENV
+              echo "🎥 Posting to YOUTUBE only"
+              ;;
+            *"Facebook Only"*)
+              echo "ENABLE_YOUTUBE=false" >> $GITHUB_ENV
+              echo "ENABLE_FACEBOOK=true" >> $GITHUB_ENV
+              echo "ENABLE_INSTAGRAM_CROSSPOST=false" >> $GITHUB_ENV
+              echo "ENABLE_BLOGSPOT=false" >> $GITHUB_ENV
+              echo "📘 Posting to FACEBOOK only"
+              ;;
+            *"Instagram Only"*)
+              echo "ENABLE_YOUTUBE=false" >> $GITHUB_ENV
+              echo "ENABLE_FACEBOOK=false" >> $GITHUB_ENV
+              echo "ENABLE_INSTAGRAM_CROSSPOST=true" >> $GITHUB_ENV
+              echo "ENABLE_BLOGSPOT=false" >> $GITHUB_ENV
+              echo "📸 Posting to INSTAGRAM only"
+              ;;
+            *"Blogspot Only"*)
+              echo "ENABLE_YOUTUBE=false" >> $GITHUB_ENV
+              echo "ENABLE_FACEBOOK=false" >> $GITHUB_ENV
+              echo "ENABLE_INSTAGRAM_CROSSPOST=false" >> $GITHUB_ENV
+              echo "ENABLE_BLOGSPOT=true" >> $GITHUB_ENV
+              echo "📝 Posting to BLOGSPOT only"
+              ;;
+          esac
+
+          echo "🏭 Running Fact Factory Unified - YOUTUBE SHORTS FIRST STRATEGY"
+          echo "Current Hour (UTC): $HOUR"
+          echo "Mode: $MODE"
+          echo "Dry Run: $DRY_RUN"
+          echo "Force: $FORCE"
+
+          CMD="python3 Scripts/FB/Fact_Factory_Unified.py --mode $MODE"
+
+          if [ "$DRY_RUN" == "true" ]; then
+            CMD="$CMD --dry-run"
+          fi
+
+          if [ "$FORCE" == "true" ]; then
+            CMD="$CMD --force"
+          fi
+
+          $CMD
+
+      # --- Commit Updated History ---
+      # ✅ RE-ENABLED: CRITICAL for preventing duplicate posts
+      - name: 💾 Persist Content History State (CRITICAL)
+        if: always()
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Add ALL history-related files
+          git add Scripts/FB/fact_factory_unified_history.json || true
+          git add Scripts/FB/shared_content_history.json || true
+          git add Scripts/FB/content_histories/ || true
+          git add Scripts/FB/*_history.json || true
+          git add Scripts/FB/*_content_history.json || true
+
+          # Check if there are changes to commit
+          if git diff --staged --quiet; then
+            echo "ℹ️  No history changes to commit"
+          else
+            git commit -m "chore: persist fact factory content memory [skip ci]" || true
+            git push origin main || true
+            echo "✅ History state persisted to repository"
+          fi
